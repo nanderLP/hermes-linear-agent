@@ -1881,7 +1881,9 @@ async def test_reply_in_source_thread_directive_is_opt_in():
 
         adapter.handle_message = capture
         payload = _created_payload(event_id="evt-src-1")
-        payload["sourceCommentId"] = "comment-src-9"
+        # Current AgentSessionEvent schema serializes this as the scalar
+        # agentSession.sourceCommentId (not a nested sourceComment object).
+        payload["agentSession"]["sourceCommentId"] = "comment-src-9"
         raw = _body(payload)
         _, status = await adapter.handle_webhook(_headers(raw, "secret", delivery_id="evt-src-1"), raw)
         assert status == 200

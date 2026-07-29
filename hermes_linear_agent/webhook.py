@@ -434,7 +434,12 @@ def extract_context(
         guidance=_guidance_text(payload.get("guidance") or session.get("guidance")),
         user_request=user_request,
         signal=signal,
-        source_comment_id=_string(payload.get("sourceCommentId") or _get_path(session, "sourceComment", "id")),
+        source_comment_id=_string(
+            payload.get("sourceCommentId")
+            or _get_path(payload, "agentSession", "sourceCommentId")
+            or _get_path(session, "sourceComment", "id")
+            or _get_path(payload, "agentActivity", "sourceCommentId")
+        ),
     )
 
 

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented here.
 
+## 0.4.1 — 2026-07-29
+
+### Fixed
+
+- Preserve Linear's current `agentSession.sourceCommentId` webhook field so replies triggered from an existing issue-comment thread can be routed back to that original thread.
+- Accept `agentActivity.sourceCommentId` as a compatible fallback for prompted activity payloads.
+
 ## 0.4.0 — 2026-07-29
 
 ### Added
