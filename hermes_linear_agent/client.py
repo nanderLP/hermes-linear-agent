@@ -1087,6 +1087,23 @@ mutation AgentSessionUpdate($id: String!, $input: AgentSessionUpdateInput!) {
         data = await self.execute(q, {"issueId": issue_id, "first": limit})
         return data.get("issue", {}).get("comments", {}).get("nodes", [])
 
+    async def get_comment_thread_root_id(self, comment_id: str) -> str | None:
+        """Return the root comment ID for a root or child comment.
+
+        ``AgentSession.sourceCommentId`` identifies the child containing the
+        mention. Linear rejects that child as ``commentCreate.parentId`` with
+        ``incorrect parent``; a rendered reply must target the thread root.
+        """
+        q = """
+        query CommentThreadRoot($id: String!) {
+          comment(id: $id) { id parent { id } }
+        }
+        """
+        data = await self.execute(q, {"id": comment_id})
+        comment = data.get("comment") or {}
+        root_id = ((comment.get("parent") or {}).get("id")) or comment.get("id")
+        return str(root_id or "").strip() or None
+
     async def list_users(self, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         q = """
         query Users($first: Int, $filter: UserFilter) {

@@ -493,14 +493,17 @@ class LinearAgentAdapter(BasePlatformAdapter):
         # mentions re-anchor the session to a copied root, and agent comments
         # inside a session-hosted thread are not rendered by Linear. Only the
         # first-party @Linear assistant replies inline. When on, this posts the
-        # final findings as a reply on the mention's source comment (a normal
-        # thread that does render). Default off keeps behavior identical to
-        # other third-party agents (e.g. Cursor). Requires create_comments.
+        # final findings as a reply on the mention's source thread root (a
+        # normal thread that does render). Linear's sourceCommentId identifies
+        # the child mention, but commentCreate only accepts the root as
+        # parentId, so the adapter resolves and retains that root before
+        # dispatch. Default off keeps behavior identical to other third-party
+        # agents (e.g. Cursor). Requires create_comments.
         # UNWIND: if Linear routes a `response` into its sourceComment thread
         # (or otherwise lets third-party agents reply inline), delete this flag,
-        # its yaml/env plumbing, and the "Reply in the source thread" prompt
-        # directive below. AgentSession.sourceComment already exists, so this is
-        # plausibly server-side work on Linear's part.
+        # its yaml/env plumbing, source-route state, and mirror send below.
+        # AgentSession.sourceComment already exists, so this is plausibly
+        # server-side work on Linear's part.
         self._reply_in_source_thread = _bool_opt(
             extra,
             "reply_in_source_thread",
@@ -518,6 +521,9 @@ class LinearAgentAdapter(BasePlatformAdapter):
         # Last time an ephemeral "working" thought was posted per session —
         # rate-limits the typing indicator (see send_typing).
         self._typing_marks: dict[str, float] = {}
+        # Agent Session ID -> (issue ID, source thread root comment ID). Routes
+        # are consumed exactly once by send(); bounded against abandoned runs.
+        self._source_thread_routes: dict[str, tuple[str, str]] = {}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not AIOHTTP_AVAILABLE:
@@ -680,18 +686,49 @@ class LinearAgentAdapter(BasePlatformAdapter):
         if issue_id:
             return await self._send_issue_comment(issue_id, content)
         activity: dict[str, Any] = {}
+        chunks = _split_message(content, self.MAX_MESSAGE_LENGTH)
         try:
             # Nothing upstream chunks the non-streaming path, so oversized
             # responses are split here rather than failing the whole send.
-            for chunk in _split_message(content, self.MAX_MESSAGE_LENGTH):
+            for chunk in chunks:
                 activity = await self._client.create_response(agent_session_id, chunk)
         except Exception as exc:  # noqa: BLE001 - adapter boundary returns SendResult
             logger.warning("[linear_agent] Failed to create response activity: %s", exc)
             return SendResult(success=False, error=str(exc))
+
+        source_reply: dict[str, Any] | None = None
+        source_route = self._source_thread_routes.pop(agent_session_id, None)
+        if source_route:
+            source_issue_id, root_comment_id = source_route
+            try:
+                for chunk in chunks:
+                    source_reply = await self._client.create_comment(
+                        source_issue_id,
+                        chunk,
+                        parent_id=root_comment_id,
+                        mutation_policy=self._mutation_policy,
+                    )
+                logger.info(
+                    "[linear_agent] Mirrored final response for session %s to source thread root %s",
+                    agent_session_id,
+                    root_comment_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - activity already succeeded
+                logger.warning(
+                    "[linear_agent] Agent response succeeded but source-thread mirror failed for %s: %s",
+                    agent_session_id,
+                    exc,
+                )
+                return SendResult(
+                    success=False,
+                    message_id=str(activity.get("id") or ""),
+                    error=f"Agent response created, but source-thread mirror failed: {exc}",
+                    raw_response=activity,
+                )
         return SendResult(
             success=True,
             message_id=str(activity.get("id") or ""),
-            raw_response=activity,
+            raw_response={"agent_activity": activity, "source_comment": source_reply} if source_reply else activity,
         )
 
     async def send_error_activity(self, agent_session_id: str, body: str) -> SendResult:
@@ -959,6 +996,9 @@ class LinearAgentAdapter(BasePlatformAdapter):
                 "reason": "auto-start only",
             }, 200
 
+        if self._reply_in_source_thread and context.source_comment_id and context.issue_id:
+            await self._prepare_source_thread_route(context)
+
         message = (
             build_created_prompt(context, payload)
             if context.action == "created"
@@ -966,16 +1006,6 @@ class LinearAgentAdapter(BasePlatformAdapter):
             if context.action == "prompted"
             else build_update_prompt(context)
         )
-        if self._reply_in_source_thread and context.source_comment_id:
-            message += (
-                "\n\n## Reply in the source thread\n\n"
-                "You were mentioned inside an existing comment thread. In "
-                "ADDITION to your normal session response, post your findings "
-                "as a reply on the source comment so they appear in that "
-                "thread: call linear_agent_create_comment with "
-                f'parent_id="{context.source_comment_id}" and your answer as '
-                "the body. Do this once, after you have the answer."
-            )
 
         try:
             await self._dispatch_linear_message(context, message, payload, profile=profile)
@@ -1004,6 +1034,33 @@ class LinearAgentAdapter(BasePlatformAdapter):
             "delivery_id": context.delivery_id,
             "agent_session_id": context.agent_session_id,
         }, 200
+
+    async def _prepare_source_thread_route(self, context: LinearWebhookContext) -> None:
+        """Resolve and retain the renderable root for one deterministic mirror."""
+        if not self._mutation_policy.get("create_comments"):
+            logger.warning(
+                "[linear_agent] reply_in_source_thread is enabled but mutation_policy.create_comments is false"
+            )
+            return
+        try:
+            root_id = await self._client.get_comment_thread_root_id(context.source_comment_id)
+        except Exception as exc:  # noqa: BLE001 - dispatch should still proceed
+            logger.warning(
+                "[linear_agent] Could not resolve source thread root for session %s: %s",
+                context.agent_session_id,
+                exc,
+            )
+            return
+        if not root_id:
+            logger.warning(
+                "[linear_agent] Source comment %s was not found for session %s",
+                context.source_comment_id,
+                context.agent_session_id,
+            )
+            return
+        if len(self._source_thread_routes) >= 256:
+            self._source_thread_routes.clear()
+        self._source_thread_routes[context.agent_session_id] = (context.issue_id, root_id)
 
     def _webhook_sender_authorized(self, context: LinearWebhookContext) -> bool:
         """Authorize the sender BEFORE any webhook side effect (fail closed).

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented here.
 
+## 0.4.2 — 2026-07-29
+
+### Fixed
+
+- Resolve a child `AgentSession.sourceCommentId` to its root comment before replying; Linear rejects child comments as `commentCreate.parentId` with `incorrect parent`.
+- Mirror final Agent Session responses to the resolved source thread in adapter-controlled delivery instead of relying on the model to invoke a comment tool.
+
 ## 0.4.1 — 2026-07-29
 
 ### Fixed

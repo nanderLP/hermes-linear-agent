@@ -1866,13 +1866,17 @@ async def test_prompted_activity_content_object_body_is_extracted():
 
 
 @pytest.mark.asyncio
-async def test_reply_in_source_thread_directive_is_opt_in():
-    """When mentioned inside an existing thread, Linear supplies a source
-    comment. With reply_in_source_thread on, the dispatched prompt instructs
-    a reply on that comment; off (default), it never does."""
+async def test_reply_in_source_thread_resolution_is_opt_in():
+    """Current AgentSessionEvent sourceCommentId is resolved only when the
+    deterministic source-thread mirror is enabled; no tool prompt is emitted."""
+
+    class SourceThreadClient(_FakeLinearClient):
+        async def get_comment_thread_root_id(self, comment_id):
+            self.calls.append(("resolve-thread-root", comment_id))
+            return "comment-root-1"
 
     async def _dispatch(extra):
-        fake_client = _FakeLinearClient()
+        fake_client = SourceThreadClient()
         adapter = _make_adapter(client=fake_client, extra=extra)
         dispatched = []
 
@@ -1881,25 +1885,83 @@ async def test_reply_in_source_thread_directive_is_opt_in():
 
         adapter.handle_message = capture
         payload = _created_payload(event_id="evt-src-1")
-        # Current AgentSessionEvent schema serializes this as the scalar
-        # agentSession.sourceCommentId (not a nested sourceComment object).
         payload["agentSession"]["sourceCommentId"] = "comment-src-9"
         raw = _body(payload)
         _, status = await adapter.handle_webhook(_headers(raw, "secret", delivery_id="evt-src-1"), raw)
         assert status == 200
         assert len(dispatched) == 1
-        return dispatched[0].text
+        return dispatched[0].text, fake_client.calls
 
-    # Opt-in: directive present, naming the exact source comment id.
-    on = await _dispatch({"reply_in_source_thread": True})
-    assert "Reply in the source thread" in on
-    assert "comment-src-9" in on
-    assert "linear_agent_create_comment" in on
+    on_text, on_calls = await _dispatch(
+        {
+            "reply_in_source_thread": True,
+            "ack_on_created": False,
+            "auto_start_on_delegation": False,
+            "mutation_policy": {"create_comments": True},
+        }
+    )
+    assert "Reply in the source thread" not in on_text
+    assert on_calls == [("resolve-thread-root", "comment-src-9")]
 
-    # Default: no directive, even though a source comment is present.
-    off = await _dispatch({})
-    assert "Reply in the source thread" not in off
-    assert "comment-src-9" not in off
+    off_text, off_calls = await _dispatch({"ack_on_created": False, "auto_start_on_delegation": False})
+    assert "Reply in the source thread" not in off_text
+    assert off_calls == []
+
+
+@pytest.mark.asyncio
+async def test_reply_in_source_thread_is_mirrored_to_resolved_root_by_adapter():
+    """Linear's sourceCommentId is the child mention, but commentCreate only
+    accepts the thread root as parentId. Resolve and mirror deterministically
+    instead of relying on the model to call the comment tool."""
+
+    class SourceThreadClient(_FakeLinearClient):
+        async def get_comment_thread_root_id(self, comment_id):
+            self.calls.append(("resolve-thread-root", comment_id))
+            return "comment-root-1"
+
+        async def create_comment(self, issue_id, body, *, parent_id=None, mutation_policy=None):
+            self.calls.append(("comment", issue_id, parent_id, body, mutation_policy))
+            return {"id": "source-reply-1"}
+
+    client = SourceThreadClient()
+    adapter = _make_adapter(
+        client=client,
+        extra={
+            "reply_in_source_thread": True,
+            "ack_on_created": False,
+            "auto_start_on_delegation": False,
+            "mutation_policy": {"create_comments": True},
+        },
+    )
+    dispatched = []
+
+    async def capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = capture
+    payload = _created_payload(event_id="evt-root-reply-1")
+    payload["agentSession"]["sourceCommentId"] = "comment-child-1"
+    raw = _body(payload)
+
+    _, status = await adapter.handle_webhook(_headers(raw, "secret", delivery_id="evt-root-reply-1"), raw)
+    assert status == 200
+    assert len(dispatched) == 1
+    assert "Reply in the source thread" not in dispatched[0].text
+
+    result = await adapter.send("session-1", "Final answer")
+
+    assert result.success is True
+    assert client.calls == [
+        ("resolve-thread-root", "comment-child-1"),
+        ("response", "session-1", "Final answer"),
+        (
+            "comment",
+            "issue-1",
+            "comment-root-1",
+            "Final answer",
+            adapter._mutation_policy,
+        ),
+    ]
 
 
 def test_register_routes_tools_through_plugin_context():
