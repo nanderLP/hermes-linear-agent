@@ -1534,6 +1534,39 @@ async def test_auto_start_fires_for_created_session_delegated_to_app_user():
 
 
 @pytest.mark.asyncio
+async def test_oauth_authorization_created_event_is_ignored():
+    """OAuthAuthorization shares the `created` action but has no agentSession;
+    a 400 would make Linear retry and eventually disable the webhook."""
+    adapter = _make_adapter()
+    raw = _body(
+        {
+            "type": "OAuthAuthorization",
+            "action": "created",
+            "userId": "user-1",
+            "oauthClientId": "client-1",
+            "webhookTimestamp": int(time.time() * 1000),
+        }
+    )
+
+    response, status = await adapter.handle_webhook(_headers(raw, "secret"), raw)
+
+    assert status == 200
+    assert response == {"status": "ignored", "reason": "unhandled created type 'OAuthAuthorization'"}
+
+
+@pytest.mark.asyncio
+async def test_agent_session_event_type_is_still_dispatched():
+    adapter = _make_adapter()
+    adapter.handle_message = _noop_handler
+    raw = _body({**_created_payload(), "type": "AgentSessionEvent"})
+
+    response, status = await adapter.handle_webhook(_headers(raw, "secret", delivery_id="evt-typed-1"), raw)
+
+    assert status == 200
+    assert response["status"] == "accepted"
+
+
+@pytest.mark.asyncio
 async def test_permission_revoked_event_logs_warning_and_is_ignored(caplog):
     adapter = _make_adapter()
     raw = _body({"type": "OAuthApp", "action": "revoked"})

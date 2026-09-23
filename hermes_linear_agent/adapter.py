@@ -906,6 +906,13 @@ class LinearAgentAdapter(BasePlatformAdapter):
                 "status": "ignored",
                 "reason": f"unhandled update type {payload.get('type')!r}",
             }, 200
+        # Other categories reuse `created` (e.g. OAuthAuthorization when a user
+        # authorizes the app) but carry no agentSession.
+        if action in ("created", "prompted") and payload.get("type") not in (None, "", "AgentSessionEvent"):
+            return {
+                "status": "ignored",
+                "reason": f"unhandled {action} type {payload.get('type')!r}",
+            }, 200
 
         try:
             context = extract_context(payload, headers)
