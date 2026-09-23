@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented here.
 
+## Unreleased
+
+### Fixed
+
+- Read `LINEAR_AGENT_*` settings through Hermes' profile secret scope. A multiplexed gateway keeps a secondary profile's `.env` out of `os.environ`, so that profile never saw its webhook secret and rejected every delivery with `Webhook secret not configured`.
+
 ## 0.4.2 — 2026-07-29
 
 ### Fixed

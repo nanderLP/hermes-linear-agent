@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 import time
 from pathlib import Path
@@ -39,6 +38,7 @@ except Exception as e:
     logging.getLogger(__name__).warning(f"[linear_agent] Failed to register tools: {e}")
 
 from .client import DEFAULT_LINEAR_GRAPHQL_URL, LinearGraphQLClient
+from .env import profile_env
 from .oauth import (
     LINEAR_TOKEN_URL,
     LinearOAuthConfig,
@@ -102,7 +102,7 @@ MAX_MESSAGE_LENGTH = 40_000
 
 
 def _str_env(name: str) -> str:
-    return os.getenv(name, "").strip()
+    return profile_env(name)
 
 
 def _first_secret(extra: dict[str, Any], key: str, env_name: str) -> str:

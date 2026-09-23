@@ -2405,6 +2405,36 @@ def test_env_enablement_seeds_all_documented_env_vars(monkeypatch):
         assert seed.get(key) == value, f"{env_name} did not seed extra[{key!r}]"
 
 
+def test_secondary_profile_reads_webhook_secret_from_its_scope(monkeypatch):
+    """A multiplexed gateway keeps a secondary profile's .env out of
+    os.environ and exposes it only through the profile secret scope."""
+    from agent import secret_scope
+
+    monkeypatch.setenv("LINEAR_AGENT_WEBHOOK_SECRET", "default-profile-secret")
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    token = secret_scope.set_secret_scope({"LINEAR_AGENT_WEBHOOK_SECRET": "secondary-secret"})
+    try:
+        adapter = LinearAgentAdapter(
+            PlatformConfig(enabled=True, token="tok", extra={}),
+            client=_FakeLinearClient(),
+        )
+    finally:
+        secret_scope.reset_secret_scope(token)
+
+    assert adapter._webhook_secret == "secondary-secret"
+
+
+def test_unscoped_read_under_multiplexing_does_not_borrow_process_env(monkeypatch):
+    from agent import secret_scope
+
+    from hermes_linear_agent.env import profile_env
+
+    monkeypatch.setenv("LINEAR_AGENT_WEBHOOK_SECRET", "default-profile-secret")
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+
+    assert profile_env("LINEAR_AGENT_WEBHOOK_SECRET") == ""
+
+
 def test_session_source_round_trips_through_dict():
     """Guide checklist: the SessionSource built for Linear sessions must
     survive to_dict -> from_dict unchanged (session persistence)."""

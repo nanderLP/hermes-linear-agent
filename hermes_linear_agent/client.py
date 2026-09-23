@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 from collections.abc import Callable
 from typing import Any
@@ -18,6 +17,7 @@ except ImportError:  # pragma: no cover - dependency checked by adapter
     AIOHTTP_AVAILABLE = False
 
 from .activity import AGENT_ACTIVITY_CREATE_MUTATION, build_activity_input
+from .env import profile_env
 from .oauth import LinearOAuthError, LinearOAuthTokenManager
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ class LinearGraphQLClient:
         token_manager: LinearOAuthTokenManager | None = None,
         proxy_url: str | None = None,
     ) -> None:
-        self.access_token = (access_token or os.getenv("LINEAR_AGENT_ACCESS_TOKEN", "")).strip()
+        self.access_token = (access_token or profile_env("LINEAR_AGENT_ACCESS_TOKEN")).strip()
         self.api_url = api_url or DEFAULT_LINEAR_GRAPHQL_URL
         self.timeout_seconds = timeout_seconds
         self._session_factory = session_factory
