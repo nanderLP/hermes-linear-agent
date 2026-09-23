@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import time
+from urllib.parse import urlencode
 
 import pytest
 from gateway.config import Platform, PlatformConfig
@@ -21,6 +22,7 @@ from hermes_linear_agent.adapter import (
 )
 from hermes_linear_agent.client import LinearGraphQLClient
 from hermes_linear_agent.oauth import (
+    OAUTH_SCOPES,
     LinearOAuthConfig,
     LinearOAuthTokenManager,
     build_auth_token_update_callback,
@@ -420,13 +422,12 @@ def test_oauth_authorization_url_uses_app_actor_and_state():
     url = build_authorization_url(
         client_id="client-1",
         redirect_uri="http://localhost:8765/oauth/linear/callback",
-        scope="read,write",
         state="state-1",
     )
 
     assert "https://linear.app/oauth/authorize?" in url
     assert "client_id=client-1" in url
-    assert "scope=read%2Cwrite" in url
+    assert urlencode({"scope": OAUTH_SCOPES}) in url
     assert "state=state-1" in url
     assert "actor=app" in url
 
@@ -559,6 +560,30 @@ def test_oauth_manager_persists_runtime_refresh_to_auth_json(tmp_path, monkeypat
     assert read_auth_token(auth_path)["access_token"] == "runtime-token"
 
 
+def test_cached_token_with_other_scopes_is_not_reused(tmp_path):
+    """Reusing it would keep the app installed with the narrower scopes."""
+    from hermes_linear_agent.adapter import _cached_auth_token
+
+    auth_path = tmp_path / "oauth.json"
+    persist_auth_token(auth_path, {"access_token": "narrow", "expires_at": 2_000_000_000, "scope": "read write"})
+
+    state = _cached_auth_token({"auth_path": str(auth_path)})
+
+    assert "access_token" not in state
+    assert "expires_at" not in state
+
+
+def test_cached_token_with_fixed_scopes_is_reused(tmp_path):
+    from hermes_linear_agent.adapter import _cached_auth_token
+
+    auth_path = tmp_path / "oauth.json"
+    # Linear echoes scopes space-separated, in its own order.
+    scope = " ".join(reversed(OAUTH_SCOPES.split(",")))
+    persist_auth_token(auth_path, {"access_token": "full", "expires_at": 2_000_000_000, "scope": scope})
+
+    assert _cached_auth_token({"auth_path": str(auth_path)})["access_token"] == "full"
+
+
 def test_oauth_cli_reads_client_credentials_from_profile_env(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     update_env_file(
@@ -566,7 +591,6 @@ def test_oauth_cli_reads_client_credentials_from_profile_env(tmp_path, monkeypat
         {
             "LINEAR_AGENT_CLIENT_ID": "client-1",
             "LINEAR_AGENT_CLIENT_SECRET": "secret-1",
-            "LINEAR_AGENT_OAUTH_SCOPES": "read,write,admin",
         },
     )
     captured = {}
@@ -589,7 +613,7 @@ def test_oauth_cli_reads_client_credentials_from_profile_env(tmp_path, monkeypat
     assert captured["client_secret"] == "secret-1"
     assert captured["env_path"] == env_path
     assert captured["auth_path"] == env_path.parent / "plugin-state" / "linear-agent" / "oauth.json"
-    assert captured["scope"] == "read,write,admin"
+    assert "scope" not in captured
 
 
 @pytest.mark.asyncio
@@ -638,7 +662,7 @@ async def test_oauth_manager_prefers_client_credentials_and_persists_access_toke
     async def fake_client_credentials_token(**kwargs):
         assert kwargs["client_id"] == "client-1"
         assert kwargs["client_secret"] == "secret-1"
-        assert kwargs["scope"] == "read,write"
+        assert "scope" not in kwargs
         return {
             "access_token": "app-access-new",
             "expires_in": 3600,
@@ -655,7 +679,6 @@ async def test_oauth_manager_prefers_client_credentials_and_persists_access_toke
             client_secret="secret-1",
             refresh_token="refresh-old",
             expires_at=1,
-            oauth_scopes="read,write",
             persist_callback=persisted.append,
         )
     )
@@ -685,7 +708,6 @@ async def test_oauth_manager_uses_client_credentials_with_real_session_factory()
             client_id="client-1",
             client_secret="secret-1",
             expires_at=1,
-            oauth_scopes="read,write",
             token_url="https://api.linear.app/oauth/token",
             session_factory=session_factory,
         )
@@ -702,7 +724,7 @@ async def test_oauth_manager_uses_client_credentials_with_real_session_factory()
                 "grant_type": "client_credentials",
                 "client_id": "client-1",
                 "client_secret": "secret-1",
-                "scope": "read,write",
+                "scope": OAUTH_SCOPES,
             },
             "headers": {},
         }
@@ -2423,7 +2445,6 @@ def test_env_enablement_seeds_all_documented_env_vars(monkeypatch):
         "LINEAR_AGENT_REFRESH_TOKEN": ("refresh_token", "ref-1"),
         "LINEAR_AGENT_TOKEN_EXPIRES_AT": ("token_expires_at", "123"),
         "LINEAR_AGENT_REDIRECT_URI": ("redirect_uri", "http://localhost/cb"),
-        "LINEAR_AGENT_OAUTH_SCOPES": ("oauth_scopes", "read,write"),
         "LINEAR_AGENT_HOME_TARGET": ("home_target", "ENG-123"),
     }
     for env_name, (_, value) in expected.items():

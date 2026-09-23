@@ -41,6 +41,7 @@ from .client import DEFAULT_LINEAR_GRAPHQL_URL, LinearGraphQLClient
 from .env import profile_env
 from .oauth import (
     LINEAR_TOKEN_URL,
+    OAUTH_SCOPES,
     LinearOAuthConfig,
     LinearOAuthTokenManager,
     build_auth_token_update_callback,
@@ -151,9 +152,17 @@ def _auth_path(extra: dict[str, Any]) -> Path:
     return Path(str(extra.get("auth_path") or _str_env("LINEAR_AGENT_AUTH_PATH") or _default_auth_path()))
 
 
+def _scope_set(value: Any) -> frozenset[str]:
+    return frozenset(part for part in re.split(r"[\s,]+", str(value or "")) if part)
+
+
 def _cached_auth_token(extra: dict[str, Any]) -> dict[str, Any]:
     state = read_auth_token(_auth_path(extra))
     if state:
+        # A token minted with other scopes left the app installed with those
+        # scopes; drop it so the next mint restores OAUTH_SCOPES.
+        if state.get("scope") and _scope_set(state["scope"]) != _scope_set(OAUTH_SCOPES):
+            state = {k: v for k, v in state.items() if k not in ("access_token", "expires_at")}
         return state
     # One-way migration compatibility: older in-tree versions stored the
     # Linear token under providers.linear_agent in Hermes' shared auth.json.
@@ -194,16 +203,12 @@ def _build_oauth_manager(extra: dict[str, Any], access_token: str) -> LinearOAut
     token_url = str(
         extra.get("token_url") or _str_env("LINEAR_AGENT_TOKEN_URL") or auth_state.get("token_url") or LINEAR_TOKEN_URL
     )
-    oauth_scopes = str(
-        extra.get("oauth_scopes") or _str_env("LINEAR_AGENT_OAUTH_SCOPES") or auth_state.get("scope") or "read,write"
-    )
     persist_tokens = _bool_opt(extra, "persist_tokens", "LINEAR_AGENT_PERSIST_TOKENS", True)
     if persist_tokens:
         callback = build_auth_token_update_callback(
             auth_path,
             client_id=client_id,
             token_url=token_url,
-            scope=oauth_scopes,
         )
     else:
         callback = None
@@ -215,7 +220,6 @@ def _build_oauth_manager(extra: dict[str, Any], access_token: str) -> LinearOAut
             access_token=access_token,
             expires_at=expires_at,
             token_url=token_url,
-            oauth_scopes=oauth_scopes,
             persist_callback=callback,
         )
     )
@@ -325,7 +329,6 @@ def _env_enablement() -> dict[str, Any] | None:
         ("LINEAR_AGENT_REFRESH_TOKEN", "refresh_token"),
         ("LINEAR_AGENT_TOKEN_EXPIRES_AT", "token_expires_at"),
         ("LINEAR_AGENT_REDIRECT_URI", "redirect_uri"),
-        ("LINEAR_AGENT_OAUTH_SCOPES", "oauth_scopes"),
         ("LINEAR_AGENT_HOME_TARGET", "home_target"),
         ("LINEAR_AGENT_ALLOWED_USERS", "allowed_users"),
         ("LINEAR_AGENT_ALLOWED_TEAMS", "allowed_teams"),
@@ -366,7 +369,6 @@ def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> dict[str, Any] | N
         "api_url",
         "token_url",
         "redirect_uri",
-        "oauth_scopes",
         "refresh_token",
         "token_expires_at",
         "persist_tokens",
@@ -1466,7 +1468,7 @@ def interactive_setup() -> None:
         default=0,
         description=(
             "Create the OAuth app in Linear: Settings → API → Applications. "
-            "Install with actor=app and scopes app:mentionable, app:assignable, read, write."
+            f"Install with actor=app and scopes {OAUTH_SCOPES}."
         ),
     )
 

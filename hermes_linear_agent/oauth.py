@@ -48,9 +48,9 @@ logger = logging.getLogger(__name__)
 LINEAR_AUTHORIZE_URL = "https://linear.app/oauth/authorize"
 LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token"
 DEFAULT_REDIRECT_URI = "http://localhost:8765/oauth/linear/callback"
-DEFAULT_SCOPES = (
-    "read,write,app:assignable,app:mentionable,customer:read,customer:write,initiative:read,initiative:write"
-)
+# Fixed for every token: a client_credentials request with a different scope
+# set revokes all of the app's tokens and replaces its installed scopes.
+OAUTH_SCOPES = "read,write,app:assignable,app:mentionable,customer:read,customer:write,initiative:read,initiative:write"
 DEFAULT_ACTOR = "app"
 AUTH_PROVIDER_ID = "linear_agent"
 REFRESH_SKEW_SECONDS = 300
@@ -82,7 +82,6 @@ class LinearOAuthConfig:
     access_token: str = ""
     expires_at: float = 0.0
     token_url: str = LINEAR_TOKEN_URL
-    oauth_scopes: str = DEFAULT_SCOPES
     refresh_skew_seconds: int = REFRESH_SKEW_SECONDS
     persist_callback: TokenUpdateCallback | None = None
     session_factory: Callable[..., Any] | None = None
@@ -174,7 +173,6 @@ class LinearOAuthTokenManager:
                         token_url=self.config.token_url,
                         client_id=self.config.client_id,
                         client_secret=self.config.client_secret,
-                        scope=self.config.oauth_scopes,
                         session_factory=self.config.session_factory,
                     )
                 except LinearOAuthError as exc:
@@ -278,7 +276,6 @@ async def _async_client_credentials_token(
     token_url: str,
     client_id: str,
     client_secret: str,
-    scope: str = DEFAULT_SCOPES,
     session_factory: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     return await _async_token_request(
@@ -287,7 +284,7 @@ async def _async_client_credentials_token(
             "grant_type": "client_credentials",
             "client_id": client_id,
             "client_secret": client_secret,
-            "scope": scope or DEFAULT_SCOPES,
+            "scope": OAUTH_SCOPES,
         },
         "client_credentials",
         session_factory,
@@ -332,7 +329,6 @@ def issue_client_credentials_token(
     client_secret: str,
     env_path: Path,
     auth_path: Path | None = None,
-    scope: str = DEFAULT_SCOPES,
     token_url: str = LINEAR_TOKEN_URL,
 ) -> dict[str, Any]:
     """Mint and persist a Linear app-actor token using client_credentials."""
@@ -341,7 +337,7 @@ def issue_client_credentials_token(
             "grant_type": "client_credentials",
             "client_id": client_id,
             "client_secret": client_secret,
-            "scope": scope or DEFAULT_SCOPES,
+            "scope": OAUTH_SCOPES,
         }
     ).encode("utf-8")
     request = Request(
@@ -361,12 +357,16 @@ def issue_client_credentials_token(
     updates = {
         "LINEAR_AGENT_CLIENT_ID": client_id,
         "LINEAR_AGENT_CLIENT_SECRET": client_secret,
-        "LINEAR_AGENT_OAUTH_SCOPES": scope or DEFAULT_SCOPES,
     }
     update_env_file(env_path, updates)
     remove_env_keys(
         env_path,
-        {"LINEAR_AGENT_ACCESS_TOKEN", "LINEAR_AGENT_REFRESH_TOKEN", "LINEAR_AGENT_TOKEN_EXPIRES_AT"},
+        {
+            "LINEAR_AGENT_ACCESS_TOKEN",
+            "LINEAR_AGENT_REFRESH_TOKEN",
+            "LINEAR_AGENT_TOKEN_EXPIRES_AT",
+            "LINEAR_AGENT_OAUTH_SCOPES",
+        },
     )
     token_data["expires_at"] = expires_at
     auth_path = auth_path or _auth_path_for_env_path(env_path)
@@ -375,13 +375,12 @@ def issue_client_credentials_token(
         token_data,
         client_id=client_id,
         token_url=token_url,
-        scope=scope or DEFAULT_SCOPES,
     )
     return {
         "env_path": str(env_path),
         "auth_path": str(auth_path),
         "expires_at": expires_at,
-        "scope": token_data.get("scope") or scope,
+        "scope": token_data.get("scope") or OAUTH_SCOPES,
     }
 
 
@@ -389,7 +388,6 @@ def build_authorization_url(
     *,
     client_id: str,
     redirect_uri: str,
-    scope: str = DEFAULT_SCOPES,
     state: str,
     actor: str = DEFAULT_ACTOR,
     prompt_consent: bool = False,
@@ -398,7 +396,7 @@ def build_authorization_url(
         "response_type": "code",
         "client_id": client_id,
         "redirect_uri": redirect_uri,
-        "scope": scope,
+        "scope": OAUTH_SCOPES,
         "state": state,
     }
     if actor:
@@ -414,7 +412,6 @@ def persist_auth_token(
     *,
     client_id: str = "",
     token_url: str = LINEAR_TOKEN_URL,
-    scope: str = DEFAULT_SCOPES,
 ) -> None:
     """Persist Linear Agent OAuth token state to plugin-owned storage."""
     access_token = str(token_data.get("access_token") or "").strip()
@@ -426,7 +423,7 @@ def persist_auth_token(
         "grant_type": "client_credentials",
         "access_token": access_token,
         "token_url": token_url,
-        "scope": token_data.get("scope") or scope,
+        "scope": token_data.get("scope") or OAUTH_SCOPES,
         "updated_at": int(time.time()),
     }
     if client_id:
@@ -468,7 +465,6 @@ def build_auth_token_update_callback(
     *,
     client_id: str = "",
     token_url: str = LINEAR_TOKEN_URL,
-    scope: str = DEFAULT_SCOPES,
 ) -> TokenUpdateCallback:
     """Return a callback that persists rotated Linear tokens to plugin state."""
 
@@ -478,7 +474,6 @@ def build_auth_token_update_callback(
             token_data,
             client_id=client_id,
             token_url=token_url,
-            scope=scope,
         )
 
     return _persist
@@ -678,7 +673,6 @@ def run_local_oauth_flow(
     env_path: Path,
     auth_path: Path | None = None,
     redirect_uri: str = DEFAULT_REDIRECT_URI,
-    scope: str = DEFAULT_SCOPES,
     actor: str = DEFAULT_ACTOR,
     prompt_consent: bool = False,
     open_browser: bool = True,
@@ -727,7 +721,6 @@ def run_local_oauth_flow(
     url = build_authorization_url(
         client_id=client_id,
         redirect_uri=redirect_uri,
-        scope=scope,
         state=state,
         actor=actor,
         prompt_consent=prompt_consent,
@@ -752,12 +745,17 @@ def run_local_oauth_flow(
         "LINEAR_AGENT_CLIENT_ID": client_id,
         "LINEAR_AGENT_CLIENT_SECRET": client_secret,
         "LINEAR_AGENT_REDIRECT_URI": redirect_uri,
-        "LINEAR_AGENT_OAUTH_SCOPES": scope,
         "LINEAR_AGENT_OAUTH_ACTOR": actor,
     }
     update_env_file(env_path, {k: v for k, v in updates.items() if v})
     remove_env_keys(
-        env_path, {"LINEAR_AGENT_ACCESS_TOKEN", "LINEAR_AGENT_REFRESH_TOKEN", "LINEAR_AGENT_TOKEN_EXPIRES_AT"}
+        env_path,
+        {
+            "LINEAR_AGENT_ACCESS_TOKEN",
+            "LINEAR_AGENT_REFRESH_TOKEN",
+            "LINEAR_AGENT_TOKEN_EXPIRES_AT",
+            "LINEAR_AGENT_OAUTH_SCOPES",
+        },
     )
     token_data["expires_at"] = expires_at
     auth_path = auth_path or _auth_path_for_env_path(env_path)
@@ -766,7 +764,6 @@ def run_local_oauth_flow(
         token_data,
         client_id=client_id,
         token_url=LINEAR_TOKEN_URL,
-        scope=scope,
     )
     return {
         "env_path": str(env_path),
@@ -784,7 +781,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--client-id", default=os.getenv("LINEAR_AGENT_CLIENT_ID", ""))
     parser.add_argument("--client-secret", default=os.getenv("LINEAR_AGENT_CLIENT_SECRET", ""))
     parser.add_argument("--redirect-uri", default=os.getenv("LINEAR_AGENT_REDIRECT_URI", ""))
-    parser.add_argument("--scope", default=os.getenv("LINEAR_AGENT_OAUTH_SCOPES", ""))
     parser.add_argument("--actor", default=os.getenv("LINEAR_AGENT_OAUTH_ACTOR", ""))
     parser.add_argument("--prompt-consent", action="store_true")
     parser.add_argument(
@@ -800,7 +796,6 @@ def main(argv: list[str] | None = None) -> int:
     env_values = read_env_file(env_path)
     client_id = args.client_id or env_values.get("LINEAR_AGENT_CLIENT_ID", "")
     client_secret = args.client_secret or env_values.get("LINEAR_AGENT_CLIENT_SECRET", "")
-    scope = args.scope or env_values.get("LINEAR_AGENT_OAUTH_SCOPES", DEFAULT_SCOPES)
     redirect_uri = args.redirect_uri or env_values.get("LINEAR_AGENT_REDIRECT_URI", DEFAULT_REDIRECT_URI)
     actor = args.actor or env_values.get("LINEAR_AGENT_OAUTH_ACTOR", DEFAULT_ACTOR)
     if not client_id or not client_secret:
@@ -814,7 +809,6 @@ def main(argv: list[str] | None = None) -> int:
             client_secret=client_secret,
             env_path=env_path,
             auth_path=auth_path,
-            scope=scope,
         )
         print(f"Saved Linear client-credentials access token to {result['auth_path']}")
         print("Hermes can also reissue this token automatically at runtime from the client ID/secret.")
@@ -825,7 +819,6 @@ def main(argv: list[str] | None = None) -> int:
             env_path=env_path,
             auth_path=auth_path,
             redirect_uri=redirect_uri,
-            scope=scope,
             actor=actor,
             prompt_consent=args.prompt_consent,
             open_browser=not args.no_browser,

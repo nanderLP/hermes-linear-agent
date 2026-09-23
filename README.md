@@ -43,8 +43,9 @@ Fastest path: `hermes gateway setup` → **Linear Agent** — the wizard prompts
    ```bash
    LINEAR_AGENT_CLIENT_ID=...
    LINEAR_AGENT_CLIENT_SECRET=...
-   LINEAR_AGENT_OAUTH_SCOPES=read,write
    ```
+
+   Every token is requested with the same fixed scopes: `read,write,app:assignable,app:mentionable,customer:read,customer:write,initiative:read,initiative:write`. They are not configurable, because Linear revokes all of an app's tokens and replaces its installed scopes whenever a token is requested with a different set. That would strip `app:assignable`/`app:mentionable` from the agent, or make two gateways on the same app revoke each other. A cached token with other scopes is discarded and minted again.
 
 3. Optional one-time mint/test for a pip or source installation:
 
@@ -85,7 +86,6 @@ LINEAR_AGENT_CLIENT_SECRET=
 LINEAR_AGENT_REFRESH_TOKEN=
 LINEAR_AGENT_TOKEN_EXPIRES_AT=
 LINEAR_AGENT_REDIRECT_URI=
-LINEAR_AGENT_OAUTH_SCOPES=read,write
 LINEAR_AGENT_OAUTH_ACTOR=app
 LINEAR_AGENT_APP_USER_ID=
 LINEAR_AGENT_WORKSPACE_ID=
