@@ -8,6 +8,7 @@ All notable changes to this project will be documented here.
 
 - Read `LINEAR_AGENT_*` settings through Hermes' profile secret scope. A multiplexed gateway keeps a secondary profile's `.env` out of `os.environ`, so that profile never saw its webhook secret and rejected every delivery with `Webhook secret not configured`.
 - Acknowledge (200 ignored) `created`/`prompted` deliveries from other webhook categories, such as `OAuthAuthorization` when a user authorizes the app, instead of failing with 400 `Missing agentSession.id`.
+- Attribute Agent Session webhooks to `agentSession.creator` (and a prompt's activity author). Linear sends no top-level `actor`, so the sender fell back to the app's own user and the gateway rejected every session as `Unauthorized user`; a user-ID allowlist could never match.
 
 ### Changed
 

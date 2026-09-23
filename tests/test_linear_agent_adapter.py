@@ -922,6 +922,34 @@ def test_webhook_signature_verification_accepts_v1_equals_signature():
 
 
 @pytest.mark.asyncio
+async def test_created_webhook_without_top_level_actor_attributes_session_creator():
+    """Linear's AgentSessionEvent has no top-level actor; the human is
+    agentSession.creator. Falling back to the app user makes the gateway
+    reject the agent's own id as unauthorized."""
+    adapter = _make_adapter(
+        extra={"allow_all_users": False, "allowed_users": ["human-1"], "app_user_id": "app-1"},
+    )
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    payload = _created_payload()
+    del payload["actor"]
+    payload["type"] = "AgentSessionEvent"
+    payload["appUserId"] = "app-1"
+    payload["agentSession"].update({"creatorId": "human-1", "creator": {"id": "human-1", "name": "Nander"}})
+    raw = _body(payload)
+
+    response, status = await adapter.handle_webhook(_headers(raw, "secret"), raw)
+
+    assert status == 200, response
+    assert captured[0].source.user_id == "human-1"
+    assert captured[0].source.user_name == "Nander"
+
+
+@pytest.mark.asyncio
 async def test_created_webhook_dispatches_session_and_emits_thought():
     fake_client = _FakeLinearClient()
     adapter = _make_adapter(client=fake_client)
